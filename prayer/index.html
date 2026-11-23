@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<title>متابعة الصلاة</title>
+<style>
+:root{--bg:#f4f7f6;--card:#fff;--ink:#14302c;--mut:#6b7f7b;--green:#16a34a;--yellow:#eab308;--red:#dc2626;--none:#e5e9e8;--brand:#0f766e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:40px}
+header{background:var(--brand);color:#fff;padding:16px;position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between}
+header h1{font-size:18px;margin:0}
+header button{background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:10px;padding:8px 12px;font-size:14px}
+main{padding:14px;max-width:560px;margin:auto}
+.card{background:var(--card);border-radius:16px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+h2{font-size:17px;margin:0 0 10px}
+input,select{width:100%;padding:12px;border:1px solid #cfd8d6;border-radius:12px;font-size:16px;margin-bottom:10px;background:#fff;font-family:inherit}
+.btn{width:100%;border:0;border-radius:12px;padding:14px;font-size:16px;background:var(--brand);color:#fff;font-weight:600;font-family:inherit}
+.btn.sec{background:#e3ecea;color:var(--brand)}
+.prayers{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.p{border:0;border-radius:12px;padding:12px 2px;font-size:14px;font-weight:600;background:var(--none);color:var(--ink);font-family:inherit}
+.p.ontime{background:var(--green);color:#fff}.p.late{background:var(--yellow);color:#222}.p.missed{background:var(--red);color:#fff}
+.big .p{padding:22px 2px;font-size:16px}
+.row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.name{font-weight:700;font-size:17px}.mut{color:var(--mut);font-size:13px}
+.tabs{display:flex;gap:8px;margin-bottom:12px;overflow-x:auto}
+.tab{flex:0 0 auto;padding:8px 14px;border-radius:20px;background:#e3ecea;color:var(--brand);border:0;font-size:15px;font-family:inherit}
+.tab.on{background:var(--brand);color:#fff}
+.legend{display:flex;gap:12px;font-size:13px;color:var(--mut);margin:6px 0 12px;flex-wrap:wrap}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-left:4px}
+.datebar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.datebar button{background:#fff;border:1px solid #cfd8d6;border-radius:10px;padding:8px 14px;font-size:16px}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:flex-end;z-index:10}
+.sheet>div{background:#fff;width:100%;border-radius:20px 20px 0 0;padding:18px;display:grid;gap:10px}
+.sheet button{border:0;border-radius:12px;padding:16px;font-size:17px;font-weight:600;font-family:inherit}
+.hide{display:none}
+.err{background:#fef2f2;color:#991b1b;padding:12px;border-radius:12px;margin-bottom:12px;font-size:14px}
+.stat{font-size:13px;color:var(--mut);margin-top:8px}
+</style>
+</head>
+<body>
+<header><h1 id="title">🕌 متابعة الصلاة</h1><button id="menuBtn" class="hide">⚙️</button></header>
+<main id="app"></main>
+<div id="sheet" class="sheet hide"><div id="sheetBody"></div></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+/* ===== 1) حط إعدادات Firebase بتاعتك هنا (الشرح في README.md) ===== */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCLBj4hiNTAXUCh4uQ5NZ4XDgKl0zccWAw",
+  authDomain: "refqa-a3790.firebaseapp.com",
+  projectId: "refqa-a3790",
+  appId: "1:344381925121:web:06891fd607469301861d00"
+};
+
+const PRAYERS = [["fajr","الفجر"],["dhuhr","الظهر"],["asr","العصر"],["maghrib","المغرب"],["isha","العشاء"]];
+const $ = s => document.querySelector(s);
+const app = $("#app");
+
+// ---- حالة محلية على الجهاز ----
+let S = JSON.parse(localStorage.getItem("pt_state") || "null") || {group:"", role:"", people:[], current:""};
+const save = () => localStorage.setItem("pt_state", JSON.stringify(S));
+
+let db = null, unsub = null, docs = {}, viewDate = today(), supTab = "";
+
+function today(d = new Date()){
+  const z = n => String(n).padStart(2,"0");
+  return d.getFullYear()+"-"+z(d.getMonth()+1)+"-"+z(d.getDate());
+}
+function shift(dateStr, n){ const d = new Date(dateStr+"T12:00:00"); d.setDate(d.getDate()+n); return today(d); }
+function nice(dateStr){
+  return new Date(dateStr+"T12:00:00").toLocaleDateString("ar-EG",{weekday:"long",day:"numeric",month:"long"});
+}
+const pid = n => n.trim().replace(/[\/\s]+/g,"_");
+const docId = (date, person) => date+"__"+pid(person);
+
+function configured(){ return FIREBASE_CONFIG.projectId && FIREBASE_CONFIG.projectId !== "PASTE_HERE"; }
+
+function connect(){
+  if(!configured()) return;
+  if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+  try{ db.enablePersistence({synchronizeTabs:true}); }catch(e){}
+  if(unsub) unsub();
+  docs = {};
+  unsub = db.collection("groups").doc(S.group).collection("days").onSnapshot(snap=>{
+    snap.docChanges().forEach(c=>{ if(c.type==="removed") delete docs[c.doc.id]; else docs[c.doc.id]=c.doc.data(); });
+    render();
+  }, err => { app.insertAdjacentHTML("afterbegin", `<div class="err">مشكلة في الاتصال: ${err.message}</div>`); });
+}
+
+async function setStatus(date, person, prayer, status){
+  const id = docId(date, person);
+  const cur = docs[id] || {person, date, prayers:{}};
+  cur.prayers = {...cur.prayers};
+  if(status) cur.prayers[prayer] = status; else delete cur.prayers[prayer];
+  cur.last = {prayer, status: status||"", at: Date.now()};
+  docs[id] = cur; render();
+  await db.collection("groups").doc(S.group).collection("days").doc(id).set(cur);
+}
+
+// ---- الشاشات ----
+function render(){
+  $("#menuBtn").classList.toggle("hide", !S.group);
+  if(!configured()){ return app.innerHTML = `<div class="card"><h2>⚠️ لسه محتاج إعداد</h2><p>افتح ملف README.md واتبع الخطوات عشان تحط إعدادات Firebase.</p></div>`; }
+  if(!S.group) return renderJoin();
+  if(S.role==="supervisor") return renderSupervisor();
+  renderMember();
+}
+
+function renderJoin(){
+  app.innerHTML = `
+  <div class="card">
+    <h2>أهلاً 👋</h2>
+    <label class="mut">كود العيلة (اتفق عليه إنت ونفّذه عند الكل بنفس الكتابة)</label>
+    <input id="g" placeholder="مثال: ahmed-family-482" autocapitalize="none">
+    <label class="mut">أنا:</label>
+    <select id="r"><option value="member">هصلّي وأسجّل (أخ / أخت / ابن قريب)</option><option value="supervisor">متابِع (أشوف الكل)</option></select>
+    <div id="nm"><label class="mut">الاسم</label><input id="n" placeholder="مثال: محمد"></div>
+    <button class="btn" id="go">دخول</button>
+  </div>`;
+  const r=$("#r"); r.onchange=()=>$("#nm").classList.toggle("hide", r.value==="supervisor");
+  $("#go").onclick=()=>{
+    const g=$("#g").value.trim().toLowerCase(), role=r.value, n=$("#n").value.trim();
+    if(g.length<6) return alert("الكود لازم يكون 6 حروف على الأقل عشان محدش يخمنه");
+    if(role==="member" && !n) return alert("اكتب الاسم");
+    S={group:g, role, people: role==="member"?[n]:[], current: role==="member"?n:""}; save(); connect(); render();
+  };
+}
+
+function statusBtns(person, date, big){
+  const d = docs[docId(date,person)]?.prayers || {};
+  return `<div class="prayers ${big?"big":""}">${PRAYERS.map(([k,l])=>`<button class="p ${d[k]||""}" data-p="${k}" data-person="${person}">${l}</button>`).join("")}</div>`;
+}
+
+function renderMember(){
+  const person = S.current;
+  app.innerHTML = `
+  ${S.people.length>1||true?`<div class="tabs">${S.people.map(p=>`<button class="tab ${p===person?"on":""}" data-sw="${p}">${p}</button>`).join("")}<button class="tab" id="add">＋ شخص</button></div>`:""}
+  <div class="datebar"><button id="prev">›</button><b>${viewDate===today()?"النهاردة":nice(viewDate)}</b><button id="next" ${viewDate>=today()?"disabled":""}>‹</button></div>
+  <div class="card"><div class="name" style="margin-bottom:10px">${person}</div>${statusBtns(person,viewDate,true)}
+  <div class="legend"><span><i class="dot" style="background:var(--green)"></i>في وقتها</span><span><i class="dot" style="background:var(--yellow)"></i>متأخر</span><span><i class="dot" style="background:var(--red)"></i>ما صلاّش</span></div></div>
+  <p class="mut">اضغط على الصلاة واختار حالتها.</p>`;
+  bindCommon();
+  document.querySelectorAll("[data-sw]").forEach(b=>b.onclick=()=>{S.current=b.dataset.sw;save();render();});
+  $("#add").onclick=()=>{const n=(prompt("اسم الشخص الجديد (مثلاً: ابن قريبي - يوسف)")||"").trim(); if(n&&!S.people.includes(n)){S.people.push(n);S.current=n;save();render();}};
+  document.querySelectorAll(".p").forEach(b=>b.onclick=()=>openSheet(person,b.dataset.p));
+}
+
+function renderSupervisor(){
+  const people = [...new Set(Object.values(docs).map(d=>d.person))].sort();
+  const dayDocs = p => docs[docId(viewDate,p)]?.prayers || {};
+  const week = p => { let on=0,late=0,miss=0; for(let i=0;i<7;i++){const x=docs[docId(shift(today(),-i),p)]?.prayers||{}; Object.values(x).forEach(v=>{if(v==="ontime")on++;else if(v==="late")late++;else if(v==="missed")miss++;});} return {on,late,miss}; };
+  app.innerHTML = `
+  <div class="datebar"><button id="prev">›</button><b>${viewDate===today()?"النهاردة":nice(viewDate)}</b><button id="next" ${viewDate>=today()?"disabled":""}>‹</button></div>
+  <div class="legend"><span><i class="dot" style="background:var(--green)"></i>في وقتها</span><span><i class="dot" style="background:var(--yellow)"></i>متأخر</span><span><i class="dot" style="background:var(--red)"></i>ما صلاّش</span><span><i class="dot" style="background:var(--none)"></i>لسه</span></div>
+  ${people.length?people.map(p=>{const d=docs[docId(viewDate,p)];const w=week(p);const last=d?.last?.at?new Date(d.last.at).toLocaleTimeString("ar-EG",{hour:"numeric",minute:"2-digit"}):"—";
+    return `<div class="card"><div class="row"><span class="name">${p}</span><span class="mut">آخر تسجيل: ${last}</span></div>
+    <div class="prayers">${PRAYERS.map(([k,l])=>`<div class="p ${dayDocs(p)[k]||""}">${l}</div>`).join("")}</div>
+    <div class="stat">آخر 7 أيام: ✅ ${w.on} • 🟡 ${w.late} • 🔴 ${w.miss}</div></div>`}).join(""):`<div class="card"><p>لسه محدش سجّل حاجة. ابعت الموقع والكود لإخواتك.</p></div>`}
+  <div class="card"><div class="mut">كود العيلة:</div><b dir="ltr">${S.group}</b></div>`;
+  bindCommon();
+}
+
+function bindCommon(){
+  $("#prev").onclick=()=>{viewDate=shift(viewDate,-1);render();};
+  $("#next").onclick=()=>{ if(viewDate<today()){viewDate=shift(viewDate,1);render();} };
+}
+
+function openSheet(person, prayer){
+  const label = PRAYERS.find(x=>x[0]===prayer)[1];
+  $("#sheetBody").innerHTML = `<div class="name">${label} — ${person}</div>
+    <button style="background:var(--green);color:#fff" data-s="ontime">✅ صلّيت في وقتها</button>
+    <button style="background:var(--yellow)" data-s="late">🟡 صلّيت متأخر</button>
+    <button style="background:var(--red);color:#fff" data-s="missed">🔴 ما صلّيتش</button>
+    <button style="background:#e5e9e8" data-s="">مسح</button>`;
+  $("#sheet").classList.remove("hide");
+  $("#sheetBody").querySelectorAll("[data-s]").forEach(b=>b.onclick=()=>{ $("#sheet").classList.add("hide"); setStatus(viewDate, person, prayer, b.dataset.s); });
+}
+$("#sheet").onclick=e=>{ if(e.target.id==="sheet") $("#sheet").classList.add("hide"); };
+$("#menuBtn").onclick=()=>{ if(confirm("تخرج من المجموعة على الجهاز ده؟")){ localStorage.removeItem("pt_state"); S={group:"",role:"",people:[],current:""}; if(unsub)unsub(); docs={}; render(); } };
+
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+if(S.group) connect();
+render();
+</script>
+</body>
+</html>
