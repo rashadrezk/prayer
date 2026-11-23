@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<link rel="manifest" href="manifest.json">
+<title>متابعة الصلاة</title>
+<style>
+:root{--bg:#f4f7f6;--card:#fff;--ink:#14302c;--mut:#6b7f7b;--green:#16a34a;--yellow:#eab308;--red:#dc2626;--none:#e5e9e8;--brand:#0f766e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Tahoma,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:40px}
+header{background:var(--brand);color:#fff;padding:16px;position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between}
+header h1{font-size:18px;margin:0}
+header button{background:rgba(255,255,255,.2);color:#fff;border:0;border-radius:10px;padding:8px 12px;font-size:14px}
+main{padding:14px;max-width:560px;margin:auto}
+.card{background:var(--card);border-radius:16px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+h2{font-size:17px;margin:0 0 10px}
+input,select{width:100%;padding:12px;border:1px solid #cfd8d6;border-radius:12px;font-size:16px;margin-bottom:10px;background:#fff;font-family:inherit}
+.btn{width:100%;border:0;border-radius:12px;padding:14px;font-size:16px;background:var(--brand);color:#fff;font-weight:600;font-family:inherit}
+.btn.sec{background:#e3ecea;color:var(--brand)}
+.prayers{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.p{border:0;border-radius:12px;padding:10px 2px;font-size:14px;font-weight:600;background:var(--none);color:var(--ink);font-family:inherit;text-align:center}
+.p small{display:block;font-size:11px;font-weight:400;opacity:.85;margin-top:3px}
+.p.ontime{background:var(--green);color:#fff}.p.late{background:var(--yellow);color:#222}.p.missed{background:var(--red);color:#fff}
+.p.locked{opacity:.5}
+.p.open{background:#fff;box-shadow:inset 0 0 0 2px var(--brand)}
+.big .p{padding:20px 2px;font-size:16px}
+.row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px}
+.name{font-weight:700;font-size:17px}.mut{color:var(--mut);font-size:13px}
+.tabs{display:flex;gap:8px;margin-bottom:12px;overflow-x:auto}
+.tab{flex:0 0 auto;padding:8px 14px;border-radius:20px;background:#e3ecea;color:var(--brand);border:0;font-size:15px;font-family:inherit}
+.tab.on{background:var(--brand);color:#fff}
+.legend{display:flex;gap:12px;font-size:13px;color:var(--mut);margin:6px 0 12px;flex-wrap:wrap}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-left:4px}
+.datebar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.datebar button{background:#fff;border:1px solid #cfd8d6;border-radius:10px;padding:8px 14px;font-size:16px}
+.hide{display:none}
+.stat{font-size:13px;color:var(--mut);margin-top:8px}
+.del{background:#fef2f2;color:#991b1b;border:0;border-radius:10px;padding:6px 10px;font-size:13px;font-family:inherit}
+.err{background:#fef2f2;color:#991b1b;padding:12px;border-radius:12px;margin-bottom:12px;font-size:14px}
+</style>
+</head>
+<body>
+<header><h1 id="title">🕌 متابعة الصلاة</h1><button id="menuBtn" class="hide">⚙️</button></header>
+<main id="app"></main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCLBj4hiNTAXUCh4uQ5NZ4XDgKl0zccWAw",
+  authDomain: "refqa-a3790.firebaseapp.com",
+  projectId: "refqa-a3790",
+  appId: "1:344381925121:web:06891fd607469301861d00"
+};
+
+const PRAYERS = [["fajr","الفجر"],["dhuhr","الظهر"],["asr","العصر"],["maghrib","المغرب"],["isha","العشاء"]];
+const CITIES = [["Cairo","القاهرة"],["Giza","الجيزة"],["Alexandria","الإسكندرية"],["Mansoura","المنصورة"],["Tanta","طنطا"],["Zagazig","الزقازيق"],["Ismailia","الإسماعيلية"],["Port Said","بورسعيد"],["Suez","السويس"],["Fayoum","الفيوم"],["Beni Suef","بني سويف"],["Minya","المنيا"],["Asyut","أسيوط"],["Sohag","سوهاج"],["Qena","قنا"],["Luxor","الأقصر"],["Aswan","أسوان"]];
+const $ = s => document.querySelector(s);
+const app = $("#app");
+
+let S = JSON.parse(localStorage.getItem("pt_state") || "null") || {group:"", role:"", people:[], current:""};
+const save = () => localStorage.setItem("pt_state", JSON.stringify(S));
+let db = null, unsub = null, docs = {}, viewDate = null, tok = 0, times = {};
+
+/* ---------- وقت وتواريخ (بتوقيت القاهرة) ---------- */
+function cairoParts(ms){
+  const f = new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Cairo",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"});
+  const p = {}; f.formatToParts(ms).forEach(x=>p[x.type]=x.value);
+  return {date:`${p.year}-${p.month}-${p.day}`, min:(+p.hour)*60+(+p.minute)};
+}
+const todayC = () => cairoParts(Date.now()).date;
+function shift(dateStr, n){ const d = new Date(dateStr+"T12:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+function nice(dateStr){ return new Date(dateStr+"T12:00:00Z").toLocaleDateString("ar-EG",{weekday:"long",day:"numeric",month:"long",timeZone:"UTC"}); }
+function fmt(min){ min=((min%1440)+1440)%1440; const h=Math.floor(min/60), m=min%60; return (h%12||12)+":"+String(m).padStart(2,"0")+(h<12?" ص":" م"); }
+function dayDiff(a, b){ return (Date.parse(a+"T00:00:00Z")-Date.parse(b+"T00:00:00Z"))/86400000; }
+function toMs(v){ if(!v) return 0; if(typeof v==="number") return v; if(v.toMillis) return v.toMillis(); return 0; }
+const pid = n => n.trim().replace(/[\/\s]+/g,"_");
+const docId = (date, person) => date+"__"+pid(person);
+function configured(){ return FIREBASE_CONFIG.projectId && FIREBASE_CONFIG.projectId !== "PASTE_HERE"; }
+function cityOf(){ return (docs["_config"] && docs["_config"].city) || "Cairo"; }
+function cityAr(){ const c = CITIES.find(x=>x[0]===cityOf()); return c ? c[1] : cityOf(); }
+
+/* ---------- مواقيت الصلاة (Aladhan - الهيئة المصرية العامة للمساحة) ---------- */
+function parseMin(s){ const m=/(\d{1,2}):(\d{2})/.exec(s||""); return m ? (+m[1])*60+(+m[2]) : null; }
+async function ensureMonth(city, y, m){
+  const key = `pt_times_${city}_${y}_${m}`;
+  let data = null;
+  try{ data = JSON.parse(localStorage.getItem(key) || "null"); }catch(e){}
+  if(!data){
+    const r = await fetch(`https://api.aladhan.com/v1/calendarByCity/${y}/${m}?city=${encodeURIComponent(city)}&country=Egypt&method=5`);
+    const j = await r.json();
+    if(!j.data) throw new Error("no times");
+    data = {};
+    j.data.forEach(d=>{
+      const g = d.date.gregorian.date.split("-"); const t = d.timings;
+      data[`${g[2]}-${g[1]}-${g[0]}`] = {fajr:parseMin(t.Fajr),sunrise:parseMin(t.Sunrise),dhuhr:parseMin(t.Dhuhr),asr:parseMin(t.Asr),maghrib:parseMin(t.Maghrib),isha:parseMin(t.Isha)};
+    });
+    try{ localStorage.setItem(key, JSON.stringify(data)); }catch(e){}
+  }
+  Object.keys(data).forEach(k=>{ times[city+"|"+k] = data[k]; });
+}
+async function loadTimes(dates){
+  const city = cityOf(), set = new Set();
+  dates.forEach(d=>set.add(d.slice(0,7)));
+  for(const ym of set){ const [y,m] = ym.split("-"); if(!times[city+"|"+ym+"-01"]) await ensureMonth(city,+y,+m); }
+}
+const getT = (city, date) => times[city+"|"+date];
+function winOf(city, date){
+  const t = getT(city,date); if(!t) return null;
+  return {fajr:[t.fajr,t.sunrise], dhuhr:[t.dhuhr,t.asr], asr:[t.asr,t.maghrib], maghrib:[t.maghrib,t.isha], isha:[t.isha,1440+t.fajr]};
+}
+function prayerDay(){
+  const c = cairoParts(Date.now()), t = getT(cityOf(), c.date);
+  if(t && c.min < t.fajr) return shift(c.date,-1);
+  return c.date;
+}
+/* الحالة بتتحدد من ساعة السيرفر وقت الضغط، مش من اختيار الشخص */
+function statusOf(city, date, k, rec){
+  const w = winOf(city,date); if(!w) return "unknown";
+  const [s,e] = w[k];
+  if(rec){
+    if(typeof rec === "string") return rec;
+    const ms = toMs(rec.at) || Date.now(), c = cairoParts(ms);
+    const a = dayDiff(c.date,date)*1440 + c.min;
+    if(a < s) return "early";
+    if(a < e) return "ontime";
+    return "late";
+  }
+  const c = cairoParts(Date.now()), n = dayDiff(c.date,date)*1440 + c.min;
+  if(n >= e) return "missed";
+  if(n >= s) return "open";
+  return "locked";
+}
+
+/* ---------- Firebase ---------- */
+function connect(){
+  if(!configured()) return;
+  if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+  try{ db.enablePersistence({synchronizeTabs:true}); }catch(e){}
+  if(unsub) unsub();
+  docs = {};
+  unsub = db.collection("groups").doc(S.group).collection("days").onSnapshot(snap=>{
+    snap.docChanges().forEach(c=>{ if(c.type==="removed") delete docs[c.doc.id]; else docs[c.doc.id]=c.doc.data(); });
+    render();
+  }, err => { app.insertAdjacentHTML("afterbegin", `<div class="err">مشكلة في الاتصال: ${err.message}</div>`); });
+}
+const col = () => db.collection("groups").doc(S.group).collection("days");
+
+async function setRec(date, person, prayer, on){
+  const id = docId(date, person), FV = firebase.firestore.FieldValue;
+  const cur = docs[id] || {person, date, prayers:{}};
+  cur.prayers = {...(cur.prayers||{})};
+  if(on) cur.prayers[prayer] = {at: Date.now()}; else delete cur.prayers[prayer];
+  docs[id] = cur; render();
+  const payload = on
+    ? {person, date, prayers:{[prayer]:{at:FV.serverTimestamp()}}, last:{prayer, at:FV.serverTimestamp()}}
+    : {person, date, prayers:{[prayer]:FV.delete()}};
+  try{ await col().doc(id).set(payload,{merge:true}); }
+  catch(e){ alert("ما اتحفظش: "+e.message); }
+}
+async function deletePerson(p){
+  if(!confirm(`تمسح "${p}" وكل تسجيلاته نهائياً؟`)) return;
+  const keys = Object.keys(docs).filter(k=>docs[k].person===p);
+  const b = db.batch(); keys.forEach(k=>b.delete(col().doc(k)));
+  try{ await b.commit(); keys.forEach(k=>delete docs[k]); render(); }catch(e){ alert("ما اتمسحش: "+e.message); }
+}
+async function addPersonSup(){
+  const n = (prompt("اسم الشخص الجديد")||"").trim(); if(!n) return;
+  const d = todayC();
+  docs[docId(d,n)] = {person:n, date:d, prayers:{}}; render();
+  try{ await col().doc(docId(d,n)).set({person:n, date:d, prayers:{}},{merge:true}); }catch(e){ alert("ما اتضافش: "+e.message); }
+}
+async function setCity(c){
+  docs["_config"] = {...(docs["_config"]||{}), city:c}; times = {}; render();
+  try{ await col().doc("_config").set({city:c},{merge:true}); }catch(e){ alert("ما اتحفظش: "+e.message); }
+}
+
+/* ---------- الشاشات ---------- */
+function render(){
+  $("#menuBtn").classList.toggle("hide", !S.group);
+  if(!configured()){ return app.innerHTML = `<div class="card"><h2>⚠️ لسه محتاج إعداد</h2><p>افتح ملف README.md واتبع الخطوات.</p></div>`; }
+  if(!S.group) return renderJoin();
+  const my = ++tok, t = todayC();
+  const need = [shift(t,-8), t, shift(t,1)];
+  if(viewDate) need.push(shift(viewDate,-7), viewDate);
+  loadTimes(need).then(()=>{
+    if(my!==tok) return;
+    if(!viewDate) viewDate = S.role==="supervisor" ? todayC() : prayerDay();
+    S.role==="supervisor" ? renderSupervisor() : renderMember();
+  }).catch(()=>{
+    if(my!==tok) return;
+    app.innerHTML = `<div class="card"><h2>مش قادر أجيب مواقيت الصلاة</h2><p class="mut">اتأكد إن النت شغال وجرّب تاني.</p><button class="btn" id="retry">إعادة المحاولة</button></div>`;
+    $("#retry").onclick = render;
+  });
+}
+
+function renderJoin(){
+  app.innerHTML = `
+  <div class="card">
+    <h2>أهلاً 👋</h2>
+    <label class="mut">كود العيلة (اتفق عليه إنت ونفّذه عند الكل بنفس الكتابة)</label>
+    <input id="g" placeholder="مثال: ahmed-family-482" autocapitalize="none">
+    <label class="mut">أنا:</label>
+    <select id="r"><option value="member">هصلّي وأسجّل (أخ / أخت / ابن قريب)</option><option value="supervisor">متابِع (أشوف الكل)</option></select>
+    <div id="nm"><label class="mut">الاسم</label><input id="n" placeholder="مثال: محمد"></div>
+    <button class="btn" id="go">دخول</button>
+  </div>`;
+  const r=$("#r"); r.onchange=()=>$("#nm").classList.toggle("hide", r.value==="supervisor");
+  $("#go").onclick=()=>{
+    const g=$("#g").value.trim().toLowerCase(), role=r.value, n=$("#n").value.trim();
+    if(g.length<6) return alert("الكود لازم يكون 6 حروف على الأقل عشان محدش يخمنه");
+    if(role==="member" && !n) return alert("اكتب الاسم");
+    S={group:g, role, people: role==="member"?[n]:[], current: role==="member"?n:""}; viewDate=null; save(); connect(); render();
+  };
+}
+
+function legend(){
+  return `<div class="legend"><span><i class="dot" style="background:var(--green)"></i>في وقتها</span><span><i class="dot" style="background:var(--yellow)"></i>متأخر</span><span><i class="dot" style="background:var(--red)"></i>ما صلّاش</span><span><i class="dot" style="background:var(--none)"></i>لسه</span></div>`;
+}
+
+function chips(person, date, interactive){
+  const city = cityOf(), w = winOf(city,date), d = (docs[docId(date,person)]||{}).prayers || {};
+  const tag = interactive ? "button" : "div";
+  return `<div class="prayers ${interactive?"big":""}">` + PRAYERS.map(([k,l])=>{
+    const st = statusOf(city,date,k,d[k]);
+    const cls = st==="early" ? "missed" : (["ontime","late","missed"].includes(st) ? st : "");
+    let sub = "";
+    if(d[k] && typeof d[k] !== "string"){ sub = fmt(cairoParts(toMs(d[k].at)||Date.now()).min); }
+    else if(w){ sub = fmt(w[k][0]); }
+    const dis = interactive && (st==="locked" || st==="unknown") ? "disabled" : "";
+    return `<${tag} class="p ${cls} ${st==="locked"?"locked":""} ${st==="open"?"open":""}" data-p="${k}" ${dis}>${l}<small>${sub}</small></${tag}>`;
+  }).join("") + `</div>`;
+}
+
+function bindNav(maxDate){
+  $("#prev").onclick = ()=>{ viewDate = shift(viewDate,-1); render(); };
+  $("#next").onclick = ()=>{ if(viewDate < maxDate){ viewDate = shift(viewDate,1); render(); } };
+}
+
+function tapPrayer(person, k){
+  const city = cityOf(), label = PRAYERS.find(x=>x[0]===k)[1];
+  if(viewDate !== prayerDay()) return;
+  const rec = ((docs[docId(viewDate,person)]||{}).prayers||{})[k];
+  const st = statusOf(city, viewDate, k, rec);
+  if(rec){ if(confirm(`تلغي تسجيل صلاة ${label}؟`)) setRec(viewDate, person, k, false); return; }
+  if(st==="locked" || st==="unknown") return;
+  if(st==="missed" && !confirm(`وقت ${label} عدّى، هتتسجل "متأخر". تكمّل؟`)) return;
+  setRec(viewDate, person, k, true);
+}
+
+function renderMember(){
+  const person = S.current, pd = prayerDay(), editable = viewDate === pd;
+  app.innerHTML = `
+  <div class="tabs">${S.people.map(p=>`<button class="tab ${p===person?"on":""}" data-sw="${p}">${p}</button>`).join("")}<button class="tab" id="add">＋ شخص</button></div>
+  <div class="datebar"><button id="prev">›</button><b>${viewDate===pd?"النهاردة":nice(viewDate)}</b><button id="next" ${viewDate>=pd?"disabled":""}>‹</button></div>
+  <div class="card"><div class="row"><span class="name">${person}</span><span class="mut">مواقيت ${cityAr()}</span></div>
+  ${chips(person, viewDate, editable)}
+  ${legend()}</div>
+  <p class="mut">${editable?"اضغط على الصلاة بعد ما تصلّيها. اللون بيتحدد تلقائياً حسب الوقت (أخضر لو في وقتها، أصفر لو متأخر).":"ده يوم قديم، للعرض بس."}</p>
+  <button class="del" id="rm">إزالة "${person}" من الجهاز ده</button>`;
+  bindNav(pd);
+  document.querySelectorAll("[data-sw]").forEach(b=>b.onclick=()=>{S.current=b.dataset.sw;save();render();});
+  $("#add").onclick=()=>{const n=(prompt("اسم الشخص الجديد (مثلاً: ابن قريبي - يوسف)")||"").trim(); if(n&&!S.people.includes(n)){S.people.push(n);S.current=n;save();render();}};
+  $("#rm").onclick=()=>{ if(!confirm(`تشيل "${person}" من الجهاز ده؟ (تسجيلاته هتفضل ظاهرة عند المتابِع)`)) return; S.people=S.people.filter(p=>p!==person); if(!S.people.length){ localStorage.removeItem("pt_state"); S={group:"",role:"",people:[],current:""}; if(unsub)unsub(); docs={}; } else { S.current=S.people[0]; save(); } render(); };
+  if(editable) document.querySelectorAll(".p").forEach(b=>b.onclick=()=>tapPrayer(person,b.dataset.p));
+}
+
+function firstDate(p){ let f=null; Object.values(docs).forEach(d=>{ if(d.person===p && d.date && (!f || d.date<f)) f=d.date; }); return f; }
+function weekStats(p){
+  const city = cityOf(), first = firstDate(p) || "0000-00-00"; let on=0, late=0, miss=0;
+  for(let i=0;i<7;i++){
+    const d = shift(todayC(),-i); if(d < first) continue;
+    const pr = (docs[docId(d,p)]||{}).prayers || {};
+    PRAYERS.forEach(([k])=>{ const st = statusOf(city,d,k,pr[k]); if(st==="ontime") on++; else if(st==="late") late++; else if(st==="missed"||st==="early") miss++; });
+  }
+  return {on,late,miss};
+}
+
+function renderSupervisor(){
+  const people = [...new Set(Object.values(docs).map(d=>d.person).filter(Boolean))].sort();
+  const t = todayC();
+  app.innerHTML = `
+  <div class="datebar"><button id="prev">›</button><b>${viewDate===t?"النهاردة":nice(viewDate)}</b><button id="next" ${viewDate>=t?"disabled":""}>‹</button></div>
+  ${legend()}
+  ${people.length ? people.map(p=>{
+    const d = docs[docId(viewDate,p)], w = weekStats(p);
+    const last = d && d.last && d.last.at ? new Date(toMs(d.last.at)||Date.now()).toLocaleTimeString("ar-EG",{hour:"numeric",minute:"2-digit",timeZone:"Africa/Cairo"}) : "—";
+    return `<div class="card"><div class="row"><span class="name">${p}</span><span class="mut">آخر تسجيل: ${last}</span></div>
+    ${chips(p, viewDate, false)}
+    <div class="stat">آخر 7 أيام: ✅ ${w.on} • 🟡 ${w.late} • 🔴 ${w.miss}</div>
+    <div style="margin-top:8px"><button class="del" data-del="${p}">🗑 مسح ${p}</button></div></div>`;
+  }).join("") : `<div class="card"><p>لسه محدش سجّل حاجة. ابعت الموقع والكود لإخواتك.</p></div>`}
+  <div class="card"><button class="btn sec" id="addp">＋ إضافة شخص</button></div>
+  <div class="card"><div class="mut">المدينة (لمواقيت الصلاة):</div>
+    <select id="city" style="margin-top:6px">${CITIES.map(([v,l])=>`<option value="${v}" ${v===cityOf()?"selected":""}>${l}</option>`).join("")}</select>
+    <div class="mut">كود العيلة:</div><b dir="ltr">${S.group}</b></div>`;
+  bindNav(t);
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>deletePerson(b.dataset.del));
+  $("#addp").onclick = addPersonSup;
+  $("#city").onchange = e=>setCity(e.target.value);
+}
+
+$("#menuBtn").onclick=()=>{ if(confirm("تخرج من المجموعة على الجهاز ده؟")){ localStorage.removeItem("pt_state"); S={group:"",role:"",people:[],current:""}; viewDate=null; if(unsub)unsub(); docs={}; render(); } };
+if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
+setInterval(()=>{ if(S.group && document.visibilityState==="visible") render(); }, 60000);
+if(S.group) connect();
+render();
+</script>
+</body>
+</html>
